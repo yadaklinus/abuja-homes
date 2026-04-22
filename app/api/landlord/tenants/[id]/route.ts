@@ -4,7 +4,7 @@ import prisma from "@/lib/prisma"
 
 export async function GET(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth()
@@ -13,7 +13,7 @@ export async function GET(
     }
 
     const landlordId = session.user.id
-    const tenantId = params.id
+    const { id: tenantId } = await params
 
     // Fetch tenant profile
     const tenant = await prisma.user.findUnique({
