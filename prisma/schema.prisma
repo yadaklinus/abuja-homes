@@ -1,0 +1,652 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  TENANT
+  LANDLORD
+  ADMIN
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum PropertyStatus {
+  DRAFT
+  PENDING_REVIEW
+  AVAILABLE
+  UNDER_INSPECTION
+  RENTED
+  ARCHIVED
+}
+
+enum PropertyType {
+  SELF_CONTAIN
+  ONE_BEDROOM
+  TWO_BEDROOM
+  THREE_BEDROOM
+  DUPLEX
+  BUNGALOW
+  MINI_FLAT
+  PENTHOUSE
+}
+
+enum AbujaDistrict {
+  MAITAMA
+  ASOKORO
+  WUSE
+  WUSE_2
+  GWARINPA
+  KUBWA
+  LUGBE
+  LOKOGOMA
+  UTAKO
+  JAHI
+  KARMO
+  GARKI
+  APO
+  LIFE_CAMP
+  DURUMI
+  GUDU
+  KADO
+  KATAMPE
+  MABUSHI
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  PAYMENT_NOTIFICATION
+  DOCUMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentType {
+  INSPECTION_FEE
+  FIRST_RENT
+  SECOND_RENT
+  LISTING_FEE
+  PLATFORM_COMMISSION
+  REFUND
+}
+
+enum NotificationType {
+  BOOKING_REQUEST
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  MESSAGE_RECEIVED
+  PAYMENT_RECEIVED
+  PAYMENT_FAILED
+  PROPERTY_APPROVED
+  PROPERTY_REJECTED
+  ACCOUNT_VERIFIED
+  ACCOUNT_SUSPENDED
+  SYSTEM_ALERT
+  NEW_REVIEW
+}
+
+enum FlagSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// ─────────────────────────────────────────────
+// CORE MODELS
+// ─────────────────────────────────────────────
+
+/// Core user account — one per person regardless of role
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  emailVerified    DateTime?
+  passwordHash     String?
+  role             UserRole  @default(TENANT)
+  isActive         Boolean   @default(true)
+  isSuspended      Boolean   @default(false)
+  suspendedAt      DateTime?
+  suspensionReason String?
+  suspendedBy      String? // Admin user ID
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relations
+  profile               Profile?
+  properties            Property[]       @relation("LandlordProperties")
+  tenantBookings        Booking[]        @relation("TenantBookings")
+  landlordBookings      Booking[]        @relation("LandlordBookings")
+  sentMessages          Message[]        @relation("SentMessages")
+  tenantConversations   Conversation[]   @relation("TenantConversations")
+  landlordConversations Conversation[]   @relation("LandlordConversations")
+  payerPayments         Payment[]        @relation("PayerPayments")
+  recipientPayments     Payment[]        @relation("RecipientPayments")
+  reviews               Review[]         @relation("TenantReviews")
+  receivedReviews       Review[]         @relation("LandlordReviews")
+  favorites             Favorite[]
+  notifications         Notification[]
+  flaggedReports        FlaggedContent[] @relation("ReportedByUser")
+  flaggedContent        FlaggedContent[] @relation("FlaggedUser")
+  sessions              Session[]
+  auditLogs             AuditLog[]       @relation("ActorLogs")
+
+  @@index([email])
+  @@index([role])
+  @@index([isSuspended])
+  @@map("users")
+}
+
+/// Extended profile information for users
+model Profile {
+  id                 String             @id @default(cuid())
+  userId             String             @unique
+  displayName        String
+  phone              String?
+  whatsappNumber     String?
+  bio                String?
+  avatarUrl          String?
+  nin                String? // National ID Number (hashed)
+  ninVerified        Boolean            @default(false)
+  bvn                String? // Bank Verification Number (hashed)
+  bvnVerified        Boolean            @default(false)
+  verificationStatus VerificationStatus @default(PENDING)
+  verificationDocs   String[] // Array of Cloudinary URLs
+  verifiedAt         DateTime?
+  verifiedBy         String? // Admin user ID
+  loyaltyPoints      Int                @default(0)
+  totalTransactions  Int                @default(0)
+  responseRate       Float? // For landlords (0–100%)
+  responseTimeHours  Float? // Average response time in hours
+  address            String?
+  stateOfOrigin      String?
+  occupation         String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([verificationStatus])
+  @@map("profiles")
+}
+
+/// NextAuth sessions table
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+/// NextAuth verification tokens (email confirm, password reset)
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  type       String   @default("email_verification") // email_verification | password_reset
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────────────────────────
+// PROPERTY MODELS
+// ─────────────────────────────────────────────
+
+/// A property listing created by a landlord
+model Property {
+  id              String         @id @default(cuid())
+  landlordId      String
+  title           String
+  slug            String         @unique
+  description     String
+  type            PropertyType
+  status          PropertyStatus @default(DRAFT)
+  district        AbujaDistrict
+  estate          String
+  street          String
+  fullAddress     String
+  latitude        Float?
+  longitude       Float?
+  price           Int // Annual rent in NGN (kobo-safe, no decimals)
+  serviceCharge   Int            @default(0)
+  cautionFee      Int            @default(0) // refundable deposit
+  agencyFee       Int            @default(0)
+  bedrooms        Int
+  bathrooms       Int
+  toilets         Int            @default(0)
+  sittingRooms    Int            @default(1)
+  totalFloors     Int            @default(1)
+  floorNumber     Int            @default(0)
+  parkingSpaces   Int            @default(0)
+  isFurnished     Boolean        @default(false)
+  isNewlyBuilt    Boolean        @default(false)
+  isVerified      Boolean        @default(false)
+  isFeatured      Boolean        @default(false)
+  verifiedAt      DateTime?
+  verifiedBy      String?
+  availableFrom   DateTime?
+  yearBuilt       Int?
+  leaseDuration   Int            @default(12) // months
+  views           Int            @default(0)
+  inquiries       Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  publishedAt     DateTime?
+  rejectionReason String?
+
+  // Relations
+  landlord          User               @relation("LandlordProperties", fields: [landlordId], references: [id], onDelete: Cascade)
+  images            PropertyImage[]
+  amenities         PropertyAmenity[]
+  virtualTourScenes VirtualTourScene[]
+  bookings          Booking[]
+  conversations     Conversation[]
+  payments          Payment[]
+  reviews           Review[]
+  favorites         Favorite[]
+
+  @@index([landlordId])
+  @@index([district])
+  @@index([status])
+  @@index([type])
+  @@index([price])
+  @@index([isVerified])
+  @@index([isFeatured])
+  @@index([slug])
+  @@map("properties")
+}
+
+/// Property images (stored on Cloudinary)
+model PropertyImage {
+  id          String   @id @default(cuid())
+  propertyId  String
+  url         String
+  publicId    String // Cloudinary public_id for deletion
+  altText     String?
+  caption     String?
+  isThumbnail Boolean  @default(false)
+  isCover     Boolean  @default(false)
+  order       Int      @default(0)
+  width       Int?
+  height      Int?
+  createdAt   DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+  @@map("property_images")
+}
+
+/// Property amenities (many per property)
+model PropertyAmenity {
+  id         String  @id @default(cuid())
+  propertyId String
+  name       String // "24/7 Power", "Swimming Pool", etc.
+  icon       String? // lucide-react icon name
+  category   String? // "security", "utilities", "recreation", etc.
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+  @@map("property_amenities")
+}
+
+/// 360° virtual tour scenes (panoramic images)
+model VirtualTourScene {
+  id          String   @id @default(cuid())
+  propertyId  String
+  name        String // "Living Room", "Master Bedroom", etc.
+  panoramaUrl String // Cloudinary URL — equirectangular image
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  property Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  hotspots TourHotspot[]
+
+  @@index([propertyId])
+  @@map("virtual_tour_scenes")
+}
+
+/// Clickable hotspots inside a virtual tour scene
+model TourHotspot {
+  id          String  @id @default(cuid())
+  sceneId     String
+  label       String
+  description String?
+  positionX   Float
+  positionY   Float
+  positionZ   Float
+  linkSceneId String? // Navigate to another scene
+
+  scene VirtualTourScene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId])
+  @@map("tour_hotspots")
+}
+
+// ─────────────────────────────────────────────
+// BOOKING / INSPECTION
+// ─────────────────────────────────────────────
+
+/// Inspection booking made by a tenant
+model Booking {
+  id                 String        @id @default(cuid())
+  tenantId           String
+  landlordId         String
+  propertyId         String
+  scheduledDate      DateTime
+  scheduledTime      String // "10:00 AM"
+  status             BookingStatus @default(PENDING)
+  tenantName         String
+  tenantPhone        String
+  notes              String?
+  landlordNotes      String?
+  cancelledBy        String?
+  cancellationReason String?
+  completedAt        DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  tenant   User     @relation("TenantBookings", fields: [tenantId], references: [id])
+  landlord User     @relation("LandlordBookings", fields: [landlordId], references: [id])
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([landlordId])
+  @@index([propertyId])
+  @@index([status])
+  @@index([scheduledDate])
+  @@map("bookings")
+}
+
+// ─────────────────────────────────────────────
+// MESSAGING
+// ─────────────────────────────────────────────
+
+/// A conversation thread between a tenant and a landlord about a property
+model Conversation {
+  id                String    @id @default(cuid())
+  propertyId        String
+  tenantId          String
+  landlordId        String
+  contactRevealed   Boolean   @default(false)
+  contactRevealedAt DateTime?
+  isFlagged         Boolean   @default(false)
+  flagReason        String?
+  isArchived        Boolean   @default(false)
+  lastMessageAt     DateTime?
+  lastMessageText   String?
+  unreadTenant      Int       @default(0)
+  unreadLandlord    Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  property Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenant   User      @relation("TenantConversations", fields: [tenantId], references: [id])
+  landlord User      @relation("LandlordConversations", fields: [landlordId], references: [id])
+  messages Message[]
+  payments Payment[]
+
+  @@unique([propertyId, tenantId, landlordId])
+  @@index([tenantId])
+  @@index([landlordId])
+  @@index([propertyId])
+  @@index([isFlagged])
+  @@map("conversations")
+}
+
+/// Individual messages in a conversation
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  senderId       String
+  content        String
+  type           MessageType @default(TEXT)
+  isFlagged      Boolean     @default(false)
+  flagReason     String?
+  isRead         Boolean     @default(false)
+  readAt         DateTime?
+  editedAt       DateTime?
+  deletedAt      DateTime? // Soft delete
+  metadata       Json? // Extra data for system messages (payment refs, etc.)
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation("SentMessages", fields: [senderId], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@index([isFlagged])
+  @@map("messages")
+}
+
+// ─────────────────────────────────────────────
+// PAYMENTS (FLUTTERWAVE ESCROW)
+// ─────────────────────────────────────────────
+
+/// Payment record for all platform transactions
+model Payment {
+  id              String        @id @default(cuid())
+  payerId         String
+  recipientId     String
+  propertyId      String
+  conversationId  String?
+  bookingId       String?
+  type            PaymentType
+  status          PaymentStatus @default(PENDING)
+  amount          Int // in NGN (no decimals)
+  platformFee     Int           @default(0)
+  flutterwaveRef  String? // FLW reference from Flutterwave
+  flutterwaveTxId String? // Transaction ID from webhook
+  transactionRef  String        @unique // our internal reference
+  callbackUrl     String?
+  metadata        Json? // Extra data (customer info, etc.)
+  description     String?
+  failureReason   String?
+  verifiedAt      DateTime?
+  refundedAt      DateTime?
+  refundAmount    Int?
+  refundReason    String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  payer        User          @relation("PayerPayments", fields: [payerId], references: [id])
+  recipient    User          @relation("RecipientPayments", fields: [recipientId], references: [id])
+  property     Property      @relation(fields: [propertyId], references: [id])
+  conversation Conversation? @relation(fields: [conversationId], references: [id])
+
+  @@index([payerId])
+  @@index([recipientId])
+  @@index([propertyId])
+  @@index([status])
+  @@index([type])
+  @@index([flutterwaveRef])
+  @@index([transactionRef])
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────────
+// REVIEWS
+// ─────────────────────────────────────────────
+
+/// Tenant review for a property and/or landlord after completed rental
+model Review {
+  id             String    @id @default(cuid())
+  tenantId       String
+  landlordId     String
+  propertyId     String
+  overallRating  Int // 1–5
+  cleanRating    Int?
+  locationRating Int?
+  valueRating    Int?
+  landlordRating Int?
+  comment        String
+  response       String? // Landlord's response
+  respondedAt    DateTime?
+  isVerified     Boolean   @default(false)
+  isFlagged      Boolean   @default(false)
+  isPublic       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant   User     @relation("TenantReviews", fields: [tenantId], references: [id])
+  landlord User     @relation("LandlordReviews", fields: [landlordId], references: [id])
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, propertyId]) // one review per tenant per property
+  @@index([propertyId])
+  @@index([landlordId])
+  @@map("reviews")
+}
+
+// ─────────────────────────────────────────────
+// MODERATION
+// ─────────────────────────────────────────────
+
+/// Content flagged for admin review
+model FlaggedContent {
+  id             String       @id @default(cuid())
+  reportedById   String?
+  flaggedUserId  String
+  contentType    String // "message" | "property" | "review" | "profile"
+  contentId      String
+  reason         String
+  severity       FlagSeverity @default(MEDIUM)
+  details        String?
+  isResolved     Boolean      @default(false)
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+
+  reportedBy  User? @relation("ReportedByUser", fields: [reportedById], references: [id])
+  flaggedUser User  @relation("FlaggedUser", fields: [flaggedUserId], references: [id])
+
+  @@index([flaggedUserId])
+  @@index([isResolved])
+  @@index([contentType])
+  @@index([severity])
+  @@map("flagged_content")
+}
+
+// ─────────────────────────────────────────────
+// MISCELLANEOUS
+// ─────────────────────────────────────────────
+
+/// Saved/favorited properties
+model Favorite {
+  id         String   @id @default(cuid())
+  userId     String
+  propertyId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, propertyId])
+  @@index([userId])
+  @@map("favorites")
+}
+
+/// In-app notifications
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json? // Extra context (propertyId, conversationId, etc.)
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+/// Immutable audit trail of admin actions
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String // "SUSPEND_USER" | "APPROVE_PROPERTY" | etc.
+  entityType String // "User" | "Property" | "Payment"
+  entityId   String
+  before     Json? // Snapshot before change
+  after      Json? // Snapshot after change
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  actor User @relation("ActorLogs", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Platform-wide settings (key/value store for admin config)
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  type      String   @default("string") // "string" | "number" | "boolean" | "json"
+  label     String
+  group     String   @default("general")
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@index([group])
+  @@map("system_settings")
+}
+
+/// Loyalty points ledger (every transaction that changes points)
+model LoyaltyLedger {
+  id          String   @id @default(cuid())
+  userId      String
+  points      Int // positive = earned, negative = spent
+  balance     Int // running balance after this entry
+  reason      String
+  referenceId String? // payment ID or booking ID
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("loyalty_ledger")
+}
