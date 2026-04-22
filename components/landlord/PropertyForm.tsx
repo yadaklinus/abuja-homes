@@ -80,7 +80,7 @@ export default function PropertyForm({ initialData, isEditing = false }: Propert
     reset,
     formState: { errors } 
   } = useForm<PropertyFormValues>({
-    resolver: zodResolver(PropertyCreateSchema),
+    resolver: zodResolver(PropertyCreateSchema) as any,
     defaultValues: initialData || {
       isFurnished: false,
       isNewlyBuilt: false,
