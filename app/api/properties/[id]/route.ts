@@ -6,10 +6,10 @@ import { PropertyUpdateSchema } from "@/lib/validations/property"
 // GET: Fetch a single property
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const id = params.id
+    const { id } = await params
 
     const property = await prisma.property.findUnique({
       where: { id },
@@ -46,7 +46,7 @@ export async function GET(
 // PATCH: Update property
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth()
@@ -54,7 +54,7 @@ export async function PATCH(
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
     }
 
-    const id = params.id
+    const { id } = await params
     const body = await req.json()
     const parsed = PropertyUpdateSchema.safeParse(body)
 
@@ -130,7 +130,7 @@ export async function PATCH(
 // DELETE: Delete property
 export async function DELETE(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await auth()
@@ -138,7 +138,7 @@ export async function DELETE(
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
     }
 
-    const id = params.id
+    const { id } = await params
     const property = await prisma.property.findUnique({
       where: { id }
     })
